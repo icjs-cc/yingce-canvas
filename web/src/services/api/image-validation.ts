@@ -126,7 +126,7 @@ export function resolveImageRequestSize(profile: ImageCapabilityConfig, quality:
     // 模型声明的精确预设（如 1920x1080）不应被自定义尺寸的 16 像素对齐规则拒绝。
     if (request.parameter === "size" && dimensions && profile.size.values.includes(request.value)) {
         validateImageSize(dimensions.width, dimensions.height, false);
-        return request;
+        return { ...request, value: `${dimensions.width}x${dimensions.height}` };
     }
     const value = request.parameter === "size" ? resolveRequestSize(quality, request.value) : resolveAspectRatio(request.value);
     return value ? { parameter: request.parameter, value } : undefined;
