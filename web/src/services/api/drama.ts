@@ -423,6 +423,35 @@ export type CreateDramaInput = {
     episodeMode: DramaEpisodeMode;
 };
 
+function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
+    return Array.isArray(value) ? value.filter((item) => item != null) : [];
+}
+
+function normalizeDramaSummary(summary: DramaSummary): DramaSummary {
+    return {
+        ...summary,
+        episodes: arrayOrEmpty(summary.episodes),
+        inbox: arrayOrEmpty(summary.inbox),
+    };
+}
+
+function normalizeDramaEpisodeDetail(detail: DramaEpisodeDetail): DramaEpisodeDetail {
+    return {
+        ...detail,
+        shots: arrayOrEmpty(detail.shots),
+        segments: arrayOrEmpty(detail.segments).map((segment) => ({
+            ...segment,
+            shotIds: arrayOrEmpty(segment.shotIds),
+            request: {
+                ...segment.request,
+                references: arrayOrEmpty(segment.request?.references),
+            },
+        })),
+        chapters: arrayOrEmpty(detail.chapters),
+        jobs: arrayOrEmpty(detail.jobs),
+    };
+}
+
 const base = (projectId: string) => `/dramas/${encodeURIComponent(projectId)}`;
 
 export function listDramas(params: { page: number; pageSize: number; q?: string; status?: DramaStatus }, signal?: AbortSignal) {
@@ -450,7 +479,7 @@ export function deleteDrama(projectId: string) {
 }
 
 export function getDrama(projectId: string, signal?: AbortSignal) {
-    return http.get<DramaSummary>(base(projectId), { signal });
+    return http.get<DramaSummary>(base(projectId), { signal }).then(normalizeDramaSummary);
 }
 
 export function updateDramaSettings(projectId: string, input: { settings?: DramaSettings; budgetMicrocredits?: number }) {
@@ -482,7 +511,7 @@ export function getDramaChapter(projectId: string, chapterId: string, signal?: A
 }
 
 export function getDramaEpisode(projectId: string, episodeId: string, signal?: AbortSignal) {
-    return http.get<DramaEpisodeDetail>(`${base(projectId)}/episodes/${encodeURIComponent(episodeId)}`, { signal });
+    return http.get<DramaEpisodeDetail>(`${base(projectId)}/episodes/${encodeURIComponent(episodeId)}`, { signal }).then(normalizeDramaEpisodeDetail);
 }
 
 export function updateDramaEpisode(projectId: string, episodeId: string, patch: { title?: string; sourceFormat?: DramaSourceFormat }) {

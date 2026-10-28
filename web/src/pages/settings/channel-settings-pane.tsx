@@ -37,7 +37,11 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub }: ChannelS
     const runningHubReady = Boolean(config.runningHub.enabled && config.runningHub.baseUrl.trim() && config.runningHub.apiKey.trim() && config.runningHub.workflowId.trim());
 
     const updateChannels = (channels: ModelChannel[], baseConfig = config) => {
-        replaceConfig(withChannels(baseConfig, channels));
+        const normalizedChannels = channels.map((channel) => ({
+            ...channel,
+            models: Array.isArray(channel.models) ? channel.models : [],
+        }));
+        replaceConfig(withChannels(baseConfig, normalizedChannels));
     };
 
     const updateChannel = (id: string, patch: Partial<ModelChannel>) => {
