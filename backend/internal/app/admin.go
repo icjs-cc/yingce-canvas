@@ -24,6 +24,8 @@ type UpdateUserRequest struct {
 	Password    string           `json:"password"`
 	Role        model.UserRole   `json:"role"`
 	Status      model.UserStatus `json:"status"`
+	// IsPromoter 为空表示不修改推广人标记。
+	IsPromoter *bool `json:"isPromoter"`
 }
 
 type BulkDisableUsersRequest struct {
@@ -93,7 +95,10 @@ type ChannelRequest struct {
 	Models               []string         `json:"models"`
 	Headers              []OutboundHeader `json:"headers"`
 	Enabled              *bool            `json:"enabled"`
-	ProxyURL             string           `json:"proxyUrl"`
+	// ProxyURL 指针语义：nil = 请求未提交该字段（更新时保持渠道现有值），
+	// 指向空串 = 显式清空渠道代理。此前用 string 类型导致「删掉代理保存」
+	// 被 mergeChannelRequest 回填旧值，永远清不掉。
+	ProxyURL *string `json:"proxyUrl"`
 }
 
 type PublicModelChannel struct {
@@ -190,7 +195,10 @@ func (s *Service) channelFromRequest(req ChannelRequest, channel model.ModelChan
 	}
 	channel.ModelsJSON = string(modelsJSON)
 	channel.HeadersJSON = headersJSON
-	proxyURL := strings.TrimSpace(req.ProxyURL)
+	proxyURL := ""
+	if req.ProxyURL != nil {
+		proxyURL = strings.TrimSpace(*req.ProxyURL)
+	}
 	if _, err := ValidateProxyURL(proxyURL); err != nil {
 		return channel, err
 	}
@@ -214,8 +222,8 @@ func mergeChannelRequest(req ChannelRequest, channel model.ModelChannel) Channel
 	if req.Headers == nil {
 		req.Headers, _ = ParseOutboundHeadersJSON(channel.HeadersJSON)
 	}
-	if strings.TrimSpace(req.ProxyURL) == "" {
-		req.ProxyURL = channel.ProxyURL
+	if req.ProxyURL == nil {
+		req.ProxyURL = &channel.ProxyURL
 	}
 	return req
 }

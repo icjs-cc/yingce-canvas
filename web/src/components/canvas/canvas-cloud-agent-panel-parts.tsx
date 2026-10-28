@@ -7,6 +7,7 @@ import type { CanvasTheme } from "@/lib/canvas-theme";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { agentAvatarClipForState, agentAvatarStateForRunStatus, agentCopy, DEFAULT_CANVAS_APPEARANCE, isAgentAvatarBundleManifest, type AgentAvatarBundleManifest } from "@/lib/canvas/agent-appearance";
 import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { usePopoverAnchorAlign } from "@/hooks/use-popover-anchor-align";
 import { useAgentLauncherPosition } from "./use-agent-launcher-position";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
@@ -14,10 +15,11 @@ import { Live2DAvatar } from "./live2d-avatar";
 import { agentAvatarBundleFileURL, live2DModelURL } from "@/services/api/appearance";
 import { AgentAvatarVideo } from "@/components/canvas/agent-avatar-video";
 import { FluidOrb } from "@/components/ui/fluid-orb";
-import { ArrowLeft, Check, CircleDot, Clock3, Download, History, LoaderCircle, MessageSquarePlus, RotateCcw, Settings2, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
-import { Button, Dropdown, Input, Popover } from "antd";
+import { ArrowLeft, Check, CircleDot, Clock3, Download, History, LoaderCircle, Maximize2, MessageSquarePlus, Minus, RotateCcw, Settings2, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { Button, Input, Popover } from "antd";
+import { CanvasAnchoredDropdown as Dropdown } from "./canvas-anchored-dropdown";
 import type { AgentContextPhase, AgentContextUsageView } from "@/lib/canvas/agent-context-usage";
-import type { CloudAgentConversation } from "@/services/cloud-agent-conversations";
+import { cloudAgentConversationServerId, type CloudAgentConversation } from "@/services/cloud-agent-conversations";
 import { AgentChatMessage, AgentOperationFeed, AgentReasoningFeed, AgentWorkingMessage, type CloudAgentChatMessage } from "./canvas-cloud-agent-chat-ui";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -95,63 +97,111 @@ export function AgentLauncher({
         window.addEventListener("resize", resize);
         return () => window.removeEventListener("resize", resize);
     }, []);
+    const [collapsed, setCollapsed] = useState(readAgentLauncherCollapsed);
+    const toggleCollapsed = () => {
+        const next = !collapsed;
+        setCollapsed(next);
+        try {
+            if (next) localStorage.setItem(AGENT_LAUNCHER_COLLAPSED_KEY, "1");
+            else localStorage.removeItem(AGENT_LAUNCHER_COLLAPSED_KEY);
+        } catch (error) {
+            console.warn("Agent 形象收起状态无法保存", error);
+        }
+    };
     const media = Boolean(mediaURL && !mediaError);
     const aspectRatio = live ? 0.75 : bundleManifest ? bundleManifest.width / bundleManifest.height : appearance.avatarType === "bundle" ? 480 / 432 : 1;
-    const keepsAvatarSize = live || media || bundleManifestLoading;
-    const height = keepsAvatarSize ? Math.max(40, Math.min(appearance.avatarHeight, viewport.height - 60, (viewport.width - 40) / aspectRatio)) : 76;
-    const width = keepsAvatarSize ? Math.round(height * aspectRatio) : 76;
+    const largeAvatar = live || media || bundleManifestLoading;
+    // 收起后只留小圆球入口：不加载 Live2D / 动画，也不挡画布。位置以右下角为锚点，收起展开不跳位。
+    const keepsAvatarSize = largeAvatar && !collapsed;
+    const height = collapsed ? AGENT_LAUNCHER_COLLAPSED_SIZE : keepsAvatarSize ? Math.max(40, Math.min(appearance.avatarHeight, viewport.height - 60, (viewport.width - 40) / aspectRatio)) : 76;
+    const width = collapsed ? AGENT_LAUNCHER_COLLAPSED_SIZE : keepsAvatarSize ? Math.round(height * aspectRatio) : 76;
     const { position, dragging, handlers } = useAgentLauncherPosition(onOpen, width, height);
+    const showToggle = !hidden && (largeAvatar || collapsed);
     return (
-        <motion.button
-            type="button"
-            aria-label={`打开${appearance.agentName}`}
-            title={live && live2DError ? live2DError : `${approvalPending ? "Agent 等待你的审批" : "打开 Agent 助手"} · 拖动可调整位置，聚焦后可用方向键移动`}
-            className={cn(
-                "canvas-agent-launcher fixed z-[calc(var(--z-toast)+1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/35",
-                dragging && "is-dragging",
-                live && "canvas-agent-launcher-live2d",
-                mediaURL && !mediaError && "canvas-agent-launcher-media",
-            )}
-            style={{ ...position, width, height, color: theme.node.text, "--canvas-agent-launcher-shadow": theme.spatial.shadow, ...(hidden ? { display: "none" } : null) } as CSSProperties}
-            aria-hidden={hidden || undefined}
-            tabIndex={hidden ? -1 : undefined}
-            data-canvas-no-zoom
-            onDragStart={(event) => event.preventDefault()}
-            {...handlers}
-            whileHover={reducedMotion || dragging ? undefined : { scale: 1.035 }}
-            whileTap={reducedMotion || dragging ? undefined : { scale: 0.96 }}
-            transition={{ duration: reducedMotion ? 0 : 0.18 }}
-        >
-            {live ? (
-                <Live2DAvatar
-                    url={live2DModelURL(appearance.live2dResourceId, appearance.live2dEntry)}
-                    width={width}
-                    height={height}
-                    reducedMotion={reducedMotion}
-                    fallback={<FluidOrb size={60} color="#7164f6" />}
-                    onReady={() => setLive2DError("")}
-                    onError={setLive2DError}
-                />
-            ) : mediaURL && !mediaError ? (
-                <AgentAvatarVideo src={mediaURL} loop={!["completed", "failed", "cancelled", "rejected"].includes(avatarState)} onError={() => setMediaError(true)} />
-            ) : bundleManifestLoading || !appearanceResolved ? (
-                <span role="status" aria-busy="true">
-                    <LoaderCircle className={reducedMotion ? "size-6" : "size-6 motion-safe:animate-spin"} aria-hidden="true" />
-                    <span className="sr-only">正在加载助手形象</span>
-                </span>
-            ) : (
-                <FluidOrb size={60} color="#7164f6" />
-            )}
-            {appearance.launcherLabel ? <span className="canvas-agent-launcher-label">{appearance.launcherLabel}</span> : null}
-            {live && live2DError ? (
-                <span className="sr-only" role="status">
-                    {live2DError}
-                </span>
+        <>
+            <motion.button
+                type="button"
+                aria-label={`打开${appearance.agentName}`}
+                title={live && live2DError ? live2DError : `${approvalPending ? "Agent 等待你的审批" : "打开 Agent 助手"} · 拖动可调整位置，聚焦后可用方向键移动`}
+                className={cn(
+                    "canvas-agent-launcher fixed z-[calc(var(--z-toast)+1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/35",
+                    dragging && "is-dragging",
+                    collapsed && "is-collapsed",
+                    keepsAvatarSize && live && "canvas-agent-launcher-live2d",
+                    keepsAvatarSize && media && "canvas-agent-launcher-media",
+                )}
+                style={{ ...position, width, height, color: theme.node.text, "--canvas-agent-launcher-shadow": theme.spatial.shadow, ...(hidden ? { display: "none" } : null) } as CSSProperties}
+                aria-hidden={hidden || undefined}
+                tabIndex={hidden ? -1 : undefined}
+                data-canvas-no-zoom
+                onDragStart={(event) => event.preventDefault()}
+                {...handlers}
+                whileHover={reducedMotion || dragging ? undefined : { scale: 1.035 }}
+                whileTap={reducedMotion || dragging ? undefined : { scale: 0.96 }}
+                transition={{ duration: reducedMotion ? 0 : 0.18 }}
+            >
+                {collapsed ? (
+                    <FluidOrb size={30} color="#7164f6" />
+                ) : live ? (
+                    <Live2DAvatar
+                        url={live2DModelURL(appearance.live2dResourceId, appearance.live2dEntry)}
+                        width={width}
+                        height={height}
+                        reducedMotion={reducedMotion}
+                        fallback={<FluidOrb size={60} color="#7164f6" />}
+                        onReady={() => setLive2DError("")}
+                        onError={setLive2DError}
+                    />
+                ) : mediaURL && !mediaError ? (
+                    <AgentAvatarVideo src={mediaURL} loop={!["completed", "failed", "cancelled", "rejected"].includes(avatarState)} onError={() => setMediaError(true)} />
+                ) : bundleManifestLoading || !appearanceResolved ? (
+                    <span role="status" aria-busy="true">
+                        <LoaderCircle className={reducedMotion ? "size-6" : "size-6 motion-safe:animate-spin"} aria-hidden="true" />
+                        <span className="sr-only">正在加载助手形象</span>
+                    </span>
+                ) : (
+                    <FluidOrb size={60} color="#7164f6" />
+                )}
+                {appearance.launcherLabel && !collapsed ? <span className="canvas-agent-launcher-label">{appearance.launcherLabel}</span> : null}
+                {live && live2DError ? (
+                    <span className="sr-only" role="status">
+                        {live2DError}
+                    </span>
+                ) : null}
+                <span className={cn("canvas-agent-launcher-status", approvalPending && "is-pending")} style={{ "--canvas-agent-status-color": statusColor } as CSSProperties} />
+                {approvalPending ? <span className="canvas-agent-launcher-badge">待审批</span> : null}
+            </motion.button>
+            {showToggle ? (
+                <button
+                    type="button"
+                    className="canvas-agent-launcher-toggle fixed z-[calc(var(--z-toast)+2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/35"
+                    style={{ right: position.right + width - 14, bottom: position.bottom + height - 14, color: theme.node.text } as CSSProperties}
+                    aria-label={collapsed ? `展开${appearance.agentName}形象` : `收起${appearance.agentName}形象`}
+                    aria-pressed={collapsed}
+                    title={collapsed ? "展开形象" : "收起形象，只保留小入口"}
+                    data-canvas-no-zoom
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        toggleCollapsed();
+                    }}
+                >
+                    {collapsed ? <Maximize2 className="size-3" aria-hidden="true" /> : <Minus className="size-3" aria-hidden="true" />}
+                </button>
             ) : null}
-            <span className={cn("canvas-agent-launcher-status", approvalPending && "is-pending")} style={{ "--canvas-agent-status-color": statusColor } as CSSProperties} />
-            {approvalPending ? <span className="canvas-agent-launcher-badge">待审批</span> : null}
-        </motion.button>
+        </>
     );
+}
+
+const AGENT_LAUNCHER_COLLAPSED_KEY = "canvas:agent-launcher-collapsed:v1";
+const AGENT_LAUNCHER_COLLAPSED_SIZE = 48;
+
+function readAgentLauncherCollapsed() {
+    try {
+        return localStorage.getItem(AGENT_LAUNCHER_COLLAPSED_KEY) === "1";
+    } catch {
+        return false;
+    }
 }
 
 export function AgentHeader({
@@ -235,8 +285,9 @@ export function formatContextBytes(bytes: number | undefined) {
     return `${Math.round(bytes).toLocaleString("zh-CN")} 字节`;
 }
 
-export function AgentContextRing({ view }: { view: AgentContextUsageView }) {
+export function AgentContextRing({ view, theme }: { view: AgentContextUsageView; theme: CanvasTheme }) {
     const [open, setOpen] = useState(false);
+    const popoverRef = usePopoverAnchorAlign(open);
     const marker = view.compactRatio && view.compactRatio > 0 && view.compactRatio < 1 ? view.compactRatio : undefined;
     const percent = view.ratio === undefined ? view.label : `${Math.round(view.ratio * 100)}%`;
     const meterLabel = view.ratio === undefined ? "—" : percent;
@@ -251,13 +302,17 @@ export function AgentContextRing({ view }: { view: AgentContextUsageView }) {
 
     return (
         <Popover
+            ref={popoverRef}
             open={open}
             onOpenChange={setOpen}
             trigger="click"
-            placement="bottomRight"
+            placement="topRight"
+            autoAdjustOverflow
             arrow={false}
-            overlayClassName="agent-context-popover"
-            getPopupContainer={(trigger) => trigger.closest<HTMLElement>(".canvas-agent-panel") ?? document.body}
+            classNames={{ root: "agent-context-popover" }}
+            // 助手面板会裁切内容；独立挂到 body，并显式携带画布主题。
+            getPopupContainer={() => document.body}
+            styles={{ root: { "--agent-surface-base": theme.node.panel, "--agent-ink": theme.node.text, "--agent-accent": theme.accent.primary } as CSSProperties }}
             content={
                 <div className="agent-context-panel" data-phase={view.phase}>
                     <span className="agent-context-eyebrow">下一次请求 · 上下文窗口占用</span>
@@ -360,6 +415,10 @@ export function AgentHistory({
     onNew,
     onOpen,
     onDelete,
+    loading,
+    error,
+    openingId,
+    onRefresh,
 }: {
     conversations: CloudAgentConversation[];
     activeConversationId: string;
@@ -368,6 +427,10 @@ export function AgentHistory({
     onNew: () => void;
     onOpen: (conversation: CloudAgentConversation) => void;
     onDelete: (id: string) => void;
+    loading?: boolean;
+    error?: string;
+    openingId?: string;
+    onRefresh?: () => void;
 }) {
     return (
         <div className="canvas-agent-history-root flex min-h-0 min-w-0 flex-1 flex-col">
@@ -375,11 +438,17 @@ export function AgentHistory({
                 <Button type="text" shape="circle" icon={<ArrowLeft className="size-4" />} onClick={onBack} aria-label="返回对话" />
                 <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold">历史对话</div>
-                    <div className="mt-0.5 text-[11px] opacity-40">保存在当前账号与画布下</div>
+                    <div className="mt-0.5 text-[var(--fs-label)] opacity-40">当前画布云端对话与本机历史</div>
                 </div>
+                {onRefresh ? <Button type="text" shape="circle" loading={loading} icon={<RotateCcw className="size-4" />} onClick={onRefresh} aria-label="刷新云端对话" /> : null}
                 <Button type="text" shape="circle" icon={<MessageSquarePlus className="size-4" />} onClick={onNew} aria-label="新建对话" title="新建对话" />
             </header>
             <div className="canvas-agent-history-scroll thin-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3">
+                {error ? (
+                    <div role="status" className="px-3 py-2 text-xs opacity-60">
+                        云端对话暂时未同步，本机历史已保留；可点击刷新重试。
+                    </div>
+                ) : null}
                 {conversations.length ? (
                     <div className="space-y-1">
                         {conversations.map((conversation) => {
@@ -391,30 +460,33 @@ export function AgentHistory({
                                     className="canvas-agent-history-item group flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors"
                                     style={{ background: active ? theme.toolbar.itemHover : "transparent", color: theme.node.text }}
                                 >
-                                    <button type="button" className="canvas-agent-history-open flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => onOpen(conversation)} aria-current={active ? "page" : undefined}>
+                                    <button type="button" className="canvas-agent-history-open flex min-w-0 flex-1 items-center gap-3 text-left" disabled={Boolean(openingId)} onClick={() => onOpen(conversation)} aria-current={active ? "page" : undefined}>
                                         <span className="grid size-8 shrink-0 place-items-center rounded-full" style={{ background: theme.node.fill, color: theme.node.muted }}>
-                                            <Clock3 className="size-3.5" />
+                                            {openingId === conversation.id ? <LoaderCircle className="size-3.5 motion-safe:animate-spin" /> : <Clock3 className="size-3.5" />}
                                         </span>
                                         <span className="canvas-agent-history-text min-w-0 flex-1">
-                                            <span className="canvas-agent-history-title block truncate text-[13px] font-medium">{conversation.title}</span>
-                                            <span className="canvas-agent-history-preview mt-0.5 block text-[11px] opacity-40" title={preview}>
+                                            <span className="canvas-agent-history-title block truncate text-[var(--fs-ui)] font-medium">{conversation.title}</span>
+                                            <span className="canvas-agent-history-preview mt-0.5 block text-[var(--fs-label)] opacity-40" title={preview}>
+                                                {cloudAgentConversationServerId(conversation) ? "云端 · " : "本机 · "}
                                                 {preview}
                                             </span>
                                         </span>
-                                        <span className="canvas-agent-history-time shrink-0 text-[10px] opacity-35">{formatConversationTime(conversation.updatedAt)}</span>
+                                        <span className="canvas-agent-history-time shrink-0 text-[var(--fs-label)] opacity-35">{formatConversationTime(conversation.updatedAt)}</span>
                                     </button>
-                                    <Button
-                                        type="text"
-                                        size="small"
-                                        danger
-                                        className="canvas-agent-history-delete !h-7 !px-2 !text-xs !opacity-80"
-                                        icon={<Trash2 className="size-3.5" />}
-                                        onClick={() => onDelete(conversation.id)}
-                                        aria-label={`删除对话 ${conversation.title}`}
-                                        title="删除对话"
-                                    >
-                                        删除
-                                    </Button>
+                                    {!cloudAgentConversationServerId(conversation) ? (
+                                        <Button
+                                            type="text"
+                                            size="small"
+                                            danger
+                                            className="canvas-agent-history-delete !h-7 !px-2 !text-xs !opacity-80"
+                                            icon={<Trash2 className="size-3.5" />}
+                                            onClick={() => onDelete(conversation.id)}
+                                            aria-label={`删除对话 ${conversation.title}`}
+                                            title="删除对话"
+                                        >
+                                            删除
+                                        </Button>
+                                    ) : null}
                                 </div>
                             );
                         })}
@@ -448,6 +520,8 @@ export function AgentConversation({
     onApprovalReasonChange,
     onApprove,
     onReject,
+    onWithdrawInterjection,
+    withdrawingInterjectionId,
 }: {
     theme: CanvasTheme;
     messages: CloudAgentChatMessage[];
@@ -465,6 +539,8 @@ export function AgentConversation({
     onApprovalReasonChange: (reason: string) => void;
     onApprove: (settings?: AgentMediaSettings) => void;
     onReject: () => void;
+    onWithdrawInterjection?: (messageId: string) => void;
+    withdrawingInterjectionId?: string | null;
 }) {
     const appearance = useAppearanceStore((state) => state.appearance.canvas) || DEFAULT_CANVAS_APPEARANCE;
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -522,6 +598,8 @@ export function AgentConversation({
                             onFocusNode={onFocusNode}
                             onUndo={onUndo}
                             undoStates={undoStates}
+                            onWithdrawInterjection={onWithdrawInterjection}
+                            withdrawing={withdrawingInterjectionId === segment.item.id}
                             isStreaming={busy && !approval && segment.item.streaming === true && segment.item === lastMessage}
                         />
                     ),
@@ -577,7 +655,7 @@ export function ComposerControls({
                 onChange={onModelChange}
                 variant="creation"
                 fullWidth
-                className="agent-composer-model-trigger !h-8 !min-w-0 !w-full !max-w-full !border-0 !bg-transparent !px-1.5 !shadow-none"
+                className="agent-composer-model-trigger !h-8 !min-w-0 !w-full !max-w-full !border-0 !bg-transparent !px-2 !shadow-none"
                 popoverClassName="agent-model-picker-popover"
                 showSelectedPrice={false}
                 showOptionPrices
@@ -596,7 +674,7 @@ export function ComposerControls({
             </Dropdown>
             <button
                 type="button"
-                className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/25"
+                className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[var(--fs-label)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/25"
                 style={{ color: selectedSkillCount ? theme.accent.primary : theme.node.muted, background: skillsOpen ? theme.node.fill : "transparent" }}
                 aria-label={`打开 Skills 技能库${selectedSkillCount ? `，已启用 ${selectedSkillCount} 个` : ""}`}
                 aria-expanded={skillsOpen}

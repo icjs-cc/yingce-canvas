@@ -80,6 +80,9 @@ type cloudAgentState struct {
 
 type CloudAgentRun struct {
 	ID             string              `json:"id"`
+	ConversationID string              `json:"conversationId"`
+	UserPrompt     string              `json:"userPrompt"`
+	IdempotencyKey string              `json:"idempotencyKey"`
 	CanvasID       string              `json:"canvasId"`
 	ParentID       string              `json:"parentId,omitempty"`
 	Status         string              `json:"status"`
@@ -111,6 +114,7 @@ type CloudAgentRun struct {
 type CloudAgentRunViewOptions struct {
 	SinceSeq   int
 	EventLimit int
+	FromStart  bool
 }
 
 func validateCloudAgentRequest(req *CloudAgentRequest) error {
@@ -252,7 +256,7 @@ func agentRunOutput(task *model.Task, state cloudAgentState) *CloudAgentRun {
 	if task.Status == model.TaskStatusSucceeded {
 		status = "completed"
 	}
-	return &CloudAgentRun{ID: task.ID, CanvasID: task.ProjectID, ParentID: state.ParentID, Status: status, PermissionMode: state.Request.PermissionMode, Model: task.Model, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, Skills: state.Skills}
+	return &CloudAgentRun{ID: task.ID, UserPrompt: state.Request.Prompt, IdempotencyKey: state.Request.IdempotencyKey, CanvasID: task.ProjectID, ParentID: state.ParentID, Status: status, PermissionMode: state.Request.PermissionMode, Model: task.Model, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, Skills: state.Skills}
 }
 
 func (s *Service) cloudAgentTask(userID, id string) (*model.Task, cloudAgentState, error) {
@@ -400,6 +404,7 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 	var inheritedPlan []cloudAgentPlanItem
 	inheritedConfirmationRounds := 0
 	var inheritedConfirmationFingerprints []string
+	parentStatus := ""
 	if parentID != "" {
 		parent, _, parentErr := s.cloudAgentTask(userID, parentID)
 		if parentErr != nil {
@@ -431,6 +436,7 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		if err != nil {
 			return nil, WrapAppError(409, "上一轮 Agent 历史记录不完整，无法继续对话；请新建对话", err)
 		}
+		parentStatus = parentExecution.Status
 		inheritedPlan = parentState.Plan
 		if parentRun.Status == "completed" && parentState.PendingConfirmationFingerprint != "" {
 			inheritedConfirmationRounds = parentState.ConfirmationRounds
@@ -527,7 +533,11 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 	input["piSessionJSONL"] = ""
 	if parentID != "" {
 		if session, sessionErr := s.repo.CloudAgentPiSession(userID, parentID); sessionErr == nil {
-			input["piSessionJSONL"] = session.SessionJSONL
+			inherited := cloudAgentInheritablePiSession(parentStatus, session.SessionJSONL)
+			if inherited == "" && session.SessionJSONL != "" {
+				slog.Info("agent continuation starts a fresh runtime session", "parent", parentID, "parentStatus", parentStatus)
+			}
+			input["piSessionJSONL"] = inherited
 		}
 	}
 	task, err := s.CreateTask(userID, CreateTaskRequest{ProjectID: req.CanvasID, Type: "canvas_text", Operation: cloudAgentOperation, Prompt: req.Prompt, Model: req.Model, LogicalModelID: req.LogicalModelID, Input: input,
@@ -549,6 +559,9 @@ func (s *Service) CreateCloudAgentRun(userID string, req CloudAgentRequest, pare
 		if errors.As(err, &busy) {
 			return nil, &AppError{Status: 409, Code: 409, Reason: "canvas_agent_busy", Message: err.Error(),
 				Details: map[string]any{"canvasId": req.CanvasID, "agent": busy.Activity}}
+		}
+		if errors.Is(err, repository.ErrCloudAgentStaleParent) {
+			return nil, &AppError{Status: 409, Code: 409, Reason: "agent_conversation_stale_parent", Message: err.Error()}
 		}
 		return nil, err
 	}
