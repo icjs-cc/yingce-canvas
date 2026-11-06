@@ -54,6 +54,10 @@ func TestProviderMediaHydrationPolicyPrefersObjectURLs(t *testing.T) {
 	if !required.requireURL || !required.preferURL {
 		t.Fatalf("minimax policy = %#v", required)
 	}
+	newAPIChannel2 := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceNewAPIChannel2)}})
+	if newAPIChannel2.requireURL || !newAPIChannel2.preferURL {
+		t.Fatalf("newapi channel 2 policy = %#v", newAPIChannel2)
+	}
 	bytesOnly := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceGeminiImage)}})
 	if bytesOnly.requireURL || bytesOnly.preferURL {
 		t.Fatalf("gemini image policy = %#v", bytesOnly)

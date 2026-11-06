@@ -188,6 +188,9 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
 		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel2 {
+			video.Duration = VideoDurationConfig{Selection: "range", Min: 5, Max: 15, Step: 1, Default: 5}
+		}
 		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 {
 			video.Resolutions = []string{"480p", "720p", "1080p"}
 		}

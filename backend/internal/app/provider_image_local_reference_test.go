@@ -45,3 +45,38 @@ func TestOpenAIImageLocalReferencesWithoutPublicURL(t *testing.T) {
 		t.Fatal("another user's reference resource was accepted")
 	}
 }
+
+func TestNewAPIChannel2LocalVideoReferencesUseInlineDataURL(t *testing.T) {
+	service, _, imageBytes := cloudAgentVisionFixture(t)
+	t.Setenv("CANVAS_PUBLIC_BASE_URL", "")
+	registry, err := protocol.NewRegistry(protocol.UnavailableAdapter{Info: protocol.Metadata{
+		ID: string(model.ChannelInterfaceNewAPIChannel2), Version: "test", RequiresPublicMediaURLs: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withProtocolRegistry(context.Background(), registry)
+	input := canvasGenerationInput{
+		Mode: "video",
+		Config: providerConfig{
+			Model: "sd2.0-fast", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2), VideoSeconds: "6",
+		},
+		ReferenceImages: []providerMedia{{ID: "first-frame", StorageKey: "resource:ref-one"}},
+	}
+	policy := providerMediaHydrationPolicyFor(ctx, input)
+	if policy.requireURL || !policy.preferURL {
+		t.Fatalf("NewAPI Channel 2 media policy = %#v", policy)
+	}
+	if err := service.hydrateGenerationMedia("user", &input, policy); err != nil {
+		t.Fatal(err)
+	}
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageBytes)
+	if input.ReferenceImages[0].DataURL != want || input.ReferenceImages[0].URL != "" {
+		t.Fatalf("reference media = %#v", input.ReferenceImages[0])
+	}
+	body := officialVideoCreateBody(t, input)
+	images, _ := body["image_urls"].([]any)
+	if len(images) != 1 || images[0] != want {
+		t.Fatalf("image_urls = %#v, want one inline local reference", images)
+	}
+}

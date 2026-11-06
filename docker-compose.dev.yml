@@ -17,6 +17,7 @@ services:
       GOMODCACHE: /tmp/go-mod
       CANVAS_BACKEND_ADDR: ":8080"
       CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_FFMPEG_PATH: /usr/bin/ffmpeg
       CANVAS_DATABASE_DRIVER: ${CANVAS_DATABASE_DRIVER:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
       REDIS_URL: ${REDIS_URL:-}

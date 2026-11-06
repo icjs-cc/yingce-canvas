@@ -489,6 +489,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxAudioDurationSeconds = 15;
         video.generateAudio = { supported: true, default: true };
     }
+    if (protocol === "newapi-channel-2") video.duration = { selection: "range", min: 5, max: 15, step: 1, default: 5 };
     if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
     if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video") {
         video.watermark = { supported: true, default: false };
