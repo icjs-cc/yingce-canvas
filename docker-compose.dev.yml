@@ -1,4 +1,4 @@
-name: open-ai-canvas-dev
+name: open-canvas
 
 services:
   backend:
