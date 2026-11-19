@@ -202,21 +202,25 @@ func TestAgnesVideo25CapabilityUsesOfficialLimits(t *testing.T) {
 	}
 }
 
-func TestNormalizeAgnesVideo25CapabilityRepairsLegacyStoredLimits(t *testing.T) {
-	legacy := DefaultModelCapabilityConfigForModel("newapi", "legacy-video")
-	normalized, err := NormalizeModelCapabilityConfigForModel("video", "agnes-video", "agnes-video-2.5", legacy)
-	if err != nil {
-		t.Fatalf("NormalizeModelCapabilityConfigForModel() error = %v", err)
-	}
-	if normalized.Video.Duration.Min != 4 || normalized.Video.Duration.Max != 12 || normalized.Video.Duration.Default != 5 {
-		t.Fatalf("normalized duration = %#v", normalized.Video.Duration)
-	}
-	if fmt.Sprint(normalized.Video.Resolutions) != fmt.Sprint([]string{"720P", "960P", "2K"}) {
-		t.Fatalf("normalized resolutions = %v", normalized.Video.Resolutions)
-	}
-	input := canvasGenerationInput{Config: providerConfig{InterfaceType: "agnes-video", Model: "agnes-video-2.5", VideoSeconds: "15", Size: "16:9", VQuality: "720P"}}
-	if err := validateVideoTask(normalized.Video, input); err == nil {
-		t.Fatalf("validateVideoTask(15 seconds) error = %v", err)
+func TestNormalizeAgnesVideo25PreservesExplicitCapability(t *testing.T) {
+	for _, name := range []string{"agnes-video-2.5", "agnes-video-2.5-flash"} {
+		t.Run(name, func(t *testing.T) {
+			profile := DefaultModelCapabilityConfigForModel("agnes-video", name)
+			profile.Video.References.MaxImages = 1
+			profile.Video.Duration.Default = 8
+			profile.Video.Ratios, profile.Video.DefaultRatio = []string{"9:16"}, "9:16"
+			normalized, err := NormalizeModelCapabilityConfigForModel("video", "agnes-video", name, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if normalized.Video.References.MaxImages != 1 || normalized.Video.Duration.Default != 8 || normalized.Video.DefaultRatio != "9:16" || len(normalized.Video.Ratios) != 1 {
+				t.Fatalf("explicit capability overwritten: %#v", normalized.Video)
+			}
+			input := canvasGenerationInput{Config: providerConfig{InterfaceType: "agnes-video", Model: name, VideoSeconds: "15", Size: "9:16", VQuality: "720P"}}
+			if err := validateVideoTask(normalized.Video, input); err == nil {
+				t.Fatal("out-of-range duration accepted")
+			}
+		})
 	}
 }
 
@@ -235,6 +239,36 @@ func TestDefaultVolcengineArkVideoCapabilitySupportsFullModalReference(t *testin
 	}
 }
 
+func TestDefaultVolcengineArkSeedance25CapabilityUsesOfficialLimits(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-seedance-25", "doubao-seedance-2-5-260628")
+	if profile == nil || profile.Video == nil {
+		t.Fatal("Seedance 2.5 profile = nil")
+	}
+	if profile.Video.References.MaxImages != 30 || profile.Video.References.MaxVideos != 10 || profile.Video.References.MaxAudios != 10 {
+		t.Fatalf("reference limits = %#v", profile.Video.References)
+	}
+	if profile.Video.Duration.Min != 4 || profile.Video.Duration.Max != 30 || profile.Video.DefaultRatio != "adaptive" || len(profile.Video.Resolutions) != 3 {
+		t.Fatalf("output defaults = %#v", profile.Video)
+	}
+	if !profile.Video.GenerateAudio.Supported || !profile.Video.Watermark.Supported {
+		t.Fatalf("audio/watermark support = %#v %#v", profile.Video.GenerateAudio, profile.Video.Watermark)
+	}
+}
+func TestDefaultWeNewH3VideoCapabilityUsesDocumentedLimits(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("wenew-h3-video", "MiniMax-H3")
+	if profile == nil || profile.Video == nil {
+		t.Fatal("WeNew H3 profile = nil")
+	}
+	if profile.Video.References.MaxImages != 9 || profile.Video.References.MaxAudios != 3 || profile.Video.References.MaxVideos != 0 {
+		t.Fatalf("reference limits = %#v", profile.Video.References)
+	}
+	if profile.Video.Duration.Min != 4 || profile.Video.Duration.Max != 15 || profile.Video.DefaultResolution != "768p" {
+		t.Fatalf("output defaults = %#v", profile.Video)
+	}
+	if profile.Video.GenerateAudio.Supported || profile.Video.Watermark.Supported || containsCapabilityString(profile.Video.Operations, "audio_to_video") {
+		t.Fatalf("unsupported WeNew capabilities = %#v", profile.Video)
+	}
+}
 func TestValidateVolcengineArkFullModalReferenceRejectsTextAndAudioOnly(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-260128").Video
 	input := canvasGenerationInput{

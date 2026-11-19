@@ -12,10 +12,11 @@ import (
 
 // ModelCapabilityConfig 是模型能力声明，不包含供应商字段名；协议适配器负责把统一参数映射到上游请求。
 type ModelCapabilityConfig struct {
-	Version int                    `json:"version"`
-	Text    *TextCapabilityConfig  `json:"text,omitempty"`
-	Image   *ImageCapabilityConfig `json:"image,omitempty"`
-	Video   *VideoCapabilityConfig `json:"video,omitempty"`
+	MediaTransport *ReferenceMediaTransport `json:"mediaTransport,omitempty"`
+	Version        int                      `json:"version"`
+	Text           *TextCapabilityConfig    `json:"text,omitempty"`
+	Image          *ImageCapabilityConfig   `json:"image,omitempty"`
+	Video          *VideoCapabilityConfig   `json:"video,omitempty"`
 }
 
 type TextCapabilityConfig struct {
@@ -28,6 +29,8 @@ type TextCapabilityConfig struct {
 	// MaxOutputTokens is the provider's maximum completion/reasoning budget.
 	MaxOutputTokens int                 `json:"maxOutputTokens"`
 	References      TextReferenceConfig `json:"references"`
+	// Thinking 声明模型支持的思考档位和上游写法；为空时按协议沿用开关语义，见 text_thinking.go。
+	Thinking *TextThinkingConfig `json:"thinking,omitempty"`
 }
 
 type TextReferenceConfig struct {
@@ -95,6 +98,9 @@ type ParameterSupport struct {
 }
 
 type VideoCapabilityConfig struct {
+	providerID        string
+	providerModel     string
+	referenceContract *protocolcontract.VideoReferenceContract
 	References        VideoReferenceConfig   `json:"references"`
 	Duration          VideoDurationConfig    `json:"duration"`
 	DurationSupported *bool                  `json:"durationSupported,omitempty"`
@@ -112,6 +118,14 @@ type VideoCapabilityConfig struct {
 	Processing *VideoProcessingConfig `json:"processing,omitempty"`
 }
 
+func (video *VideoCapabilityConfig) maxImagesFor(operation string) int {
+	capacity := video.References.MaxImages
+	if limit, limited := video.referenceContract.ImageLimit(video.providerModel, operation); limited {
+		return min(capacity, limit)
+	}
+	return capacity
+}
+
 const (
 	VideoProcessingFPSKeepSource = "keep_source"
 	VideoProcessingFPSUserSelect = "user_select"
@@ -119,8 +133,11 @@ const (
 	DefaultVideoProcessingMaxSourceSeconds = 180
 	// VideoProcessingOperationEnhance 是画质增强任务的 operation，前后端与价格档共用。
 	VideoProcessingOperationEnhance = "enhance"
+	VideoProcessingOperationDepth   = "depth"
+	MediaKitDepthMaxSourceSeconds   = 600
 	// VolcengineMediaKitEnhanceVideoProtocol 是官方插件 volcengine-mediakit 的画质增强 provider。
 	VolcengineMediaKitEnhanceVideoProtocol = "volcengine-mediakit-enhance-video"
+	VolcengineMediaKitVideoDepthProtocol   = "volcengine-mediakit-video-depth"
 )
 
 // VideoProcessingConfig 是视频处理工具的后台配置：帧率策略决定用户是否选择帧率，
@@ -210,6 +227,14 @@ func NormalizeModelCapabilityConfig(capability string, protocol string, input *M
 }
 
 func NormalizeModelCapabilityConfigForModel(capability string, protocol string, modelName string, input *ModelCapabilityConfig, registries ...*protocolcontract.Registry) (*ModelCapabilityConfig, error) {
+	var transport *ReferenceMediaTransport
+	if input != nil {
+		var err error
+		transport, err = normalizeReferenceMediaTransport(input.MediaTransport)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if capability != "text" && capability != "image" && capability != "video" {
 		return nil, nil
 	}
@@ -228,23 +253,34 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 		if text.MaxOutputTokens == 0 {
 			text.MaxOutputTokens = 16384
 		}
-		value := &ModelCapabilityConfig{Version: 1, Text: &text}
+		value := &ModelCapabilityConfig{Version: 1, MediaTransport: transport, Text: &text}
 		if err := validateTextCapabilityConfig(value.Text); err != nil {
 			return nil, err
 		}
+		var registry *protocolcontract.Registry
+		if len(registries) > 0 {
+			registry = registries[0]
+		}
+		thinking, err := normalizeTextThinkingConfig(text.Thinking, thinkingWireForProtocol(protocol, registry), text.MaxOutputTokens)
+		if err != nil {
+			return nil, err
+		}
+		value.Text.Thinking = thinking
 		return value, nil
 	}
 	if capability == "image" {
 		if input == nil || input.Image == nil {
 			return nil, BadAuthRequest("请配置图片模型能力参数")
 		}
+		if input.Image.Parameters == nil {
+			normalizeLegacyImageResolutionConfig(protocol, input.Image)
+		}
 		if len(registries) > 0 && registries[0] != nil {
-			if adapter, ok := registries[0].Resolve(protocol); ok && adapter.Metadata().ImageParameters != nil {
-				if err := resolveImageCapabilityParameters(input.Image, adapter.Metadata().ImageParameters, modelName); err != nil {
+			if adapter, ok := registries[0].Resolve(protocol); ok {
+				metadata := adapter.Metadata()
+				if err := resolveImageCapabilityParameters(input.Image, metadata.ImageParameters, modelName, metadata.Create); err != nil {
 					return nil, err
 				}
-			} else if input.Image.Parameters != nil {
-				return nil, BadAuthRequest("当前插件未声明图片参数合同，请先更新插件")
 			}
 		}
 		if input.Image.Parameters != nil {
@@ -259,7 +295,7 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 		if input.Image.Parameters == nil {
 			fillMissingImageSizePresets(input.Image, protocol)
 		}
-		value := &ModelCapabilityConfig{Version: 1, Image: input.Image}
+		value := &ModelCapabilityConfig{Version: 1, MediaTransport: transport, Image: input.Image}
 		if err := validateImageCapabilityConfig(value.Image); err != nil {
 			return nil, err
 		}
@@ -268,7 +304,8 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
 	}
-	video := applyModelSpecificVideoCapability(input.Video, protocol, modelName)
+	// 已保存和提交的能力由管理员决定；型号建议只用于构造默认配置。
+	video := input.Video
 	if strings.TrimSpace(protocol) == "autodl-comfyui" {
 		var err error
 		video, err = normalizeAutoDLVideoScreenSpec(video, modelName)
@@ -276,7 +313,14 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 			return nil, err
 		}
 	}
-	value := &ModelCapabilityConfig{Version: 1, Video: video}
+	resolvedVideo := *video
+	resolvedVideo.providerID, resolvedVideo.providerModel = protocol, modelName
+	if len(registries) > 0 && registries[0] != nil {
+		if adapter, ok := registries[0].Resolve(protocol); ok {
+			resolvedVideo.referenceContract = adapter.Metadata().VideoReferences
+		}
+	}
+	value := &ModelCapabilityConfig{Version: 1, MediaTransport: transport, Video: &resolvedVideo}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
 		return nil, err
 	}
@@ -476,8 +520,10 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 		}
 		if video.Processing != nil {
 			// 处理类模型的 videoSeconds 是服务端测得的源时长，fpsBand 只用于价格档选择。
-			spec.Options["videoSeconds"] = numericRange(1, float64(videoProcessingMaxSourceSeconds(video.Processing)), 1)
-			spec.Options["fpsBand"] = anyValues(videoProcessingFPSBands)
+			spec.Options["videoSeconds"] = numericRange(1, float64(videoProcessingMaxSourceSeconds(video)), 1)
+			if video.DefaultOperation != VideoProcessingOperationDepth {
+				spec.Options["fpsBand"] = anyValues(videoProcessingFPSBands)
+			}
 		}
 		if video.GenerateAudio.Supported {
 			spec.Options["videoGenerateAudio"] = boolValues(true)

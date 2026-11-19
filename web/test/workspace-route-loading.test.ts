@@ -40,7 +40,8 @@ describe("workspace route loading", () => {
         expect(router).toContain('import { RequireFeature } from "@/components/auth/require-feature";');
         expect(router).not.toContain("const RequireFeature = lazy(");
         expect(router).not.toMatch(/const \w+Page = lazy\(load\w+Page\)/);
-        expect(layout).toContain("preloadWorkspaceNavigationPages()");
+        expect(layout).not.toContain("preloadWorkspaceNavigationPages");
+        expect(source("../src/lib/workspace-route-modules.ts")).not.toContain("preloadWhenIdle");
         expect(html).not.toContain('style="background:#ffffff"');
         expect(html).toContain("html.dark body");
 
@@ -95,7 +96,7 @@ describe("workspace route loading", () => {
         expect(detail).not.toContain("AppDrawer");
         expect(layout).not.toContain("useCanvasUiStore");
         expect(layout).not.toContain("CanvasDeleteProjectsDialog");
-        expect(canvas).toContain("deleteDialogOpen ? <Suspense");
+        expect(canvas).toMatch(/deleteDialogOpen\s*\?\s*\(?\s*<Suspense/);
     });
 
     test("does not poll wallet balance from permanent workspace chrome", () => {
@@ -140,7 +141,7 @@ describe("workspace wallet entry", () => {
 
         expect(router).toContain('path: "/wallet"');
         expect(router).toContain("element: <RequireAuth>{null}</RequireAuth>");
-        expect(router).not.toContain("WalletPage");
+        expect(router).not.toMatch(/\bWalletPage\b/);
         expect(router).not.toContain("loadWalletPage");
         expect(modules).not.toContain("pages/wallet");
         expect(host).toContain('pathname !== "/wallet"');

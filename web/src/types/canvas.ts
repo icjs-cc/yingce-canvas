@@ -34,12 +34,7 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Frame = "frame",
-    Markdown = "markdown",
-    Svg = "svg",
-    Html = "html",
     Panorama = "panorama",
-    Compare = "compare",
-    Chart = "chart",
     ColorGrade = "colorgrade",
     MediaConversion = "media-conversion",
     BatchTable = "batch-table",
@@ -67,7 +62,8 @@ export type CanvasGenerationBatchStatus = "queued" | "running" | "partial_failed
 export type CanvasGenerationBatchItemStatus = "waiting" | "submitting" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type CanvasImageGenerationType = "generation" | "edit";
 export type CanvasWorkflowKind = "free" | "script" | "story_input" | "character" | "scene" | "storyboard" | "shot" | "final" | "styleboard" | "reference_set" | "reference_video" | "action_board";
-export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat" | "enhance";
+export type CanvasVideoEditOperation = "text_to_video" | "image_to_video" | "reference_to_video" | "extend" | "inpaint" | "replace_element" | "camera_motion" | "style_transfer" | "audio_to_video" | "compare_versions" | "concat" | "enhance" | "depth";
+export type CanvasVideoReferenceMode = "text" | "all" | "frames";
 export type CanvasSkillCategory = "writing" | "storyboard" | "image" | "video" | "utility";
 export type CanvasSkillOutputMode = "text" | "json" | "image_prompt" | "workflow";
 export type StoryboardColumn =
@@ -313,6 +309,7 @@ export type CanvasNodeMetadata = {
               sourceType?: string;
           };
     content?: string;
+    officialAssetId?: string;
     previewContent?: string;
     /** Original file and immutable pixel-corrected variants; references share the current content/storageKey. */
     imageRotation?: {
@@ -329,6 +326,7 @@ export type CanvasNodeMetadata = {
         mimeType?: string;
     };
     richText?: Record<string, unknown>;
+    textFormat?: "plain" | "markdown";
     composerContent?: string;
     prompt?: string;
     /** 文本节点是否处于列表模式；用于触发多模态分析并创建多维表格。 */
@@ -339,6 +337,8 @@ export type CanvasNodeMetadata = {
     /** 浏览器文件上传，与模型生成任务状态独立。 */
     fileUpload?: "uploading" | "error";
     fileUploadProgress?: number;
+    /** Original local filename, including its extension; never a physical storage key. */
+    originalFileName?: string;
     locked?: boolean;
     errorDetails?: string;
     generationErrorCode?: string;
@@ -373,6 +373,8 @@ export type CanvasNodeMetadata = {
     generateAudio?: string;
     watermark?: string;
     audioVoice?: string;
+    audioMode?: string;
+    audioVoiceBindings?: Array<{ characterNodeId: string; audioNodeId: string }>;
     audioFormat?: string;
     audioSpeed?: string;
     audioLanguage?: string;
@@ -459,6 +461,7 @@ export type CanvasNodeMetadata = {
     /** Whether the video file contains an audio track when this is known. */
     hasAudio?: boolean;
     assetId?: string;
+    assetVersionId?: string;
     assetTags?: string[];
     assetCategory?: AssetCategory;
     workflowKind?: CanvasWorkflowKind;
@@ -488,6 +491,11 @@ export type CanvasNodeMetadata = {
     characterVisualStatus?: string;
     characterVoiceStatus?: string;
     characterVoiceName?: string;
+    characterVoiceSampleResourceId?: string;
+    characterVoiceSampleUrl?: string;
+    sharedCharacter?: boolean;
+    selectedOutfitId?: string;
+    officialCharacterSnapshot?: import("@/services/api/official-assets").OfficialAssetReference["character"];
     characterVoiceProfile?: {
         name: string;
         provider: string;
@@ -543,7 +551,10 @@ export type CanvasNodeMetadata = {
         bitrateLevel?: "low" | "medium" | "high";
         bitrate?: number;
     };
+    /** 相对深度视频任务参数，供结果节点重试使用。 */
+    videoDepth?: { sourceNodeId: string; model: string };
     videoEditOperation?: CanvasVideoEditOperation;
+    videoReferenceMode?: CanvasVideoReferenceMode;
     arkPrivateAssetUpload?: string;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
@@ -575,14 +586,12 @@ export type CanvasNodeMetadata = {
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
-    /** 图表节点的图形类型，缺省柱状图。落盘字段——新增扩展节点的自有字段都要在这里声明。 */
-    chartKind?: "bar" | "line";
     /** 调色节点的参数；缺省视为未调色。 */
     colorGrade?: CanvasColorGrade;
     mediaConversion?: MediaConversionNodeState;
     /** 用户手动拉伸过尺寸；图片按真实比例自动适配时避让它。 */
     manualSize?: boolean;
-    /** 用户手动改过节点名称；原位重新生成时保留，不再换成提示词摘要。 */
+    /** true 表示保留节点名称，false 表示由生成提示词自动命名。 */
     manualTitle?: boolean;
     storyboard?: StoryboardData;
     storyboardShotDuration?: StoryboardShotDuration;

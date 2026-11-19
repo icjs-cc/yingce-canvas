@@ -69,7 +69,16 @@ func (a manifestAdapter) BuildCreate(_ context.Context, c RequestContext) (Reque
 	if err := validateManifestRequest(a.manifest.Validations, request); err != nil {
 		return RequestSpec{}, err
 	}
-	return buildManifestOperation(a.manifest.Create, a.manifest.Auth, request, "")
+	if request.Capability == "" || request.Capability == CapabilityVideo {
+		if limit, limited := a.manifest.Metadata.VideoReferences.ImageLimit(request.Model, request.Operation); limited && len(request.Images) > limit {
+			return RequestSpec{}, fmt.Errorf("视频协议 %s 的当前工作流和生成方式最多发送 %d 张图片，当前有 %d 张", a.manifest.Metadata.ID, limit, len(request.Images))
+		}
+	}
+	spec, err := buildManifestOperation(a.manifest.Create, a.manifest.Auth, request, "")
+	if err != nil {
+		return RequestSpec{}, err
+	}
+	return completeCommonImageRequest(spec, a.manifest.Create, request)
 }
 
 func (a manifestAdapter) BuildAgent(_ context.Context, c AgentRequestContext) (RequestSpec, error) {
@@ -99,10 +108,16 @@ func (a manifestAdapter) ParseAgent(_ context.Context, body []byte) (AgentResult
 			continue
 		}
 		call := AgentToolCall{
-			ID:               firstPathValue(object, response.ToolCallIDPaths...),
-			Name:             firstPathValue(object, response.ToolCallNamePaths...),
-			Arguments:        firstPathJSONValue(object, response.ToolCallArgsPaths...),
-			ThoughtSignature: firstPathValue(object, response.ToolCallSignaturePaths...),
+			ID:        firstPathValue(object, response.ToolCallIDPaths...),
+			Name:      firstPathValue(object, response.ToolCallNamePaths...),
+			Arguments: firstPathJSONValue(object, response.ToolCallArgsPaths...),
+		}
+		// Signatures are opaque protocol state, not display text to normalize.
+		for _, path := range response.ToolCallSignaturePaths {
+			if signature, ok := pathValue(object, path).(string); ok && signature != "" {
+				call.ThoughtSignature = signature
+				break
+			}
 		}
 		if strings.TrimSpace(call.Name) != "" {
 			if strings.TrimSpace(call.ID) == "" {
@@ -387,7 +402,9 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 	if status == StatusPending && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
 		status = StatusSucceeded
 	}
-	if result.Text == "" && result.Reasoning == "" && len(result.Images) == 0 && len(result.Videos) == 0 && len(result.Audios) == 0 {
+	// 独立下载接口稍后提供媒体时，保留轮询中的实际时长和清晰度。
+	keepUsageForDownload := a.manifest.ResultOperation != nil && len(result.Usage) > 0
+	if result.Text == "" && result.Reasoning == "" && len(result.Images) == 0 && len(result.Videos) == 0 && len(result.Audios) == 0 && !keepUsageForDownload {
 		result = nil
 	}
 	return CreateResult{TaskID: id, Status: status, Result: result, Message: message, Stage: stage, QueueAhead: queueAhead}
@@ -461,6 +478,18 @@ func mediaReferencesFromManifestValue(value any, kind string, ephemeral bool) []
 				Kind: defaultValue(manifestString(typed["kind"]), kind), Role: manifestString(typed["role"]), MIMEType: manifestString(typed["mimeType"]),
 				Name: manifestString(typed["name"]), Order: manifestInt(typed["order"]), Weight: manifestFloat(typed["weight"]), Ephemeral: ephemeral || manifestTruthy(typed["ephemeral"]),
 			}
+			reference.Metadata = make(map[string]any)
+			metadata, _ := typed["metadata"].(map[string]any)
+			for _, key := range []string{"size", "z_index", "bounding_box", "description", "text_recognition", "background", "output_format"} {
+				if value, exists := typed[key]; exists {
+					reference.Metadata[key] = value
+				} else if value, exists := metadata[key]; exists {
+					reference.Metadata[key] = value
+				}
+			}
+			if len(reference.Metadata) == 0 {
+				reference.Metadata = nil
+			}
 			if reference.URL == "" {
 				reference.URL = firstString(typed, "file_url", "fileUrl", "image_url", "imageUrl", "video_url", "videoUrl", "audio_url", "audioUrl", "uri")
 			}
@@ -481,6 +510,15 @@ func normalizeManifestInlineDataURL(value, kind, formatHint string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.HasPrefix(value, "data:") {
 		return value
+	}
+	// 某些 Images 网关不返回 output_format；按文件头识别，避免把 GIF 动画标为 PNG。
+	if kind == "image" {
+		prefix := value[:min(len(value), 48)]
+		if data, err := base64.StdEncoding.DecodeString(prefix); err == nil {
+			if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") {
+				formatHint = detected
+			}
+		}
 	}
 	return "data:" + manifestInlineMediaMIME(kind, formatHint) + ";base64," + value
 }

@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { CanvasResourceReference } from "../../src/lib/canvas/canvas-resource-references";
+import type { CanvasResourceMentionTextareaActions } from "../../src/components/canvas/canvas-resource-mention-textarea";
 
 const dom = new Window({ url: "http://localhost/" });
 for (const key of ["window", "document", "navigator", "Element", "Node", "HTMLElement", "HTMLTextAreaElement", "MutationObserver", "ResizeObserver"] as const) {
@@ -12,9 +13,68 @@ const { createRoot } = await import("react-dom/client");
 const { MentionMenu } = await import("../../src/components/canvas/canvas-mention-menu");
 const { CanvasResourceMentionTextarea } = await import("../../src/components/canvas/canvas-resource-mention-textarea");
 const { buildToolMentionReference, canvasResourceMentionToken } = await import("../../src/lib/canvas/canvas-resource-references");
-const { serializeEditableValue } = await import("../../src/components/canvas/canvas-mention-editable");
+const { renderEditableContent, serializeEditableValue, setEditableSelection, getEditableSelection } = await import("../../src/components/canvas/canvas-mention-editable");
 const { getNineGridMenuItems } = await import("../../src/components/canvas/canvas-image-toolbar-tools");
 afterAll(() => dom.happyDOM.abort());
+
+test("参考栏加号复用引用菜单，取消不写入，选择时插入到光标", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const actions = { current: null as CanvasResourceMentionTextareaActions | null };
+    const reference: CanvasResourceReference = { id: "connected", nodeId: "connected", kind: "image", label: "图片1", title: "林间回望", active: true };
+    const writes: string[] = [];
+    const prompt = "前景远景";
+    try {
+        await act(async () =>
+            root.render(
+                <CanvasResourceMentionTextarea
+                    value={prompt}
+                    references={[reference]}
+                    actionsRef={actions}
+                    onChange={(next) => {
+                        writes.push(next);
+                    }}
+                />,
+            ),
+        );
+        const editor = host.querySelector<HTMLElement>('[role="textbox"]')!;
+        editor.focus();
+        setEditableSelection(editor, 2);
+        await act(async () => actions.current!.openReferencePicker());
+        expect(document.querySelector("[data-canvas-resource-mention-menu]")).not.toBeNull();
+        await act(async () => editor.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+        expect(document.querySelector("[data-canvas-resource-mention-menu]")).toBeNull();
+        expect(writes).toEqual([]);
+        await act(async () => actions.current!.openReferencePicker());
+        await act(async () => editor.dispatchEvent(new dom.KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+        expect(writes).toEqual([`前景 ${canvasResourceMentionToken(reference)} 远景`]);
+        expect(document.querySelector("[data-canvas-resource-mention-menu]")).toBeNull();
+    } finally {
+        await act(async () => root.unmount());
+        host.remove();
+    }
+});
+
+test("行首参考图前后都能放置光标，零宽锚点不进入提示词", () => {
+    const editor = document.createElement("div");
+    const image: CanvasResourceReference = { id: "image", nodeId: "image", kind: "image", label: "图片1", active: true };
+    const token = canvasResourceMentionToken(image);
+    renderEditableContent(editor, `前缀${token}后缀`, [image]);
+
+    const leadingAnchor = editor.firstChild;
+    expect(leadingAnchor?.textContent).toBe("前缀");
+    setEditableSelection(editor, 0);
+    expect(getEditableSelection(editor)).toEqual({ start: 0, end: 0 });
+
+    renderEditableContent(editor, token, [image]);
+    expect(editor.firstChild?.textContent).toBe("\u200B");
+    expect(serializeEditableValue(editor)).toBe(token);
+    setEditableSelection(editor, 0);
+    expect(getEditableSelection(editor)).toEqual({ start: 0, end: 0 });
+    setEditableSelection(editor, token.length);
+    expect(getEditableSelection(editor)).toEqual({ start: token.length, end: token.length });
+});
 
 for (const inModal of [true, false]) {
     test(`${inModal ? "放大" : "普通"}编辑器在故事板标签后显示占位提示，输入正文后隐藏且不写入内容`, async () => {

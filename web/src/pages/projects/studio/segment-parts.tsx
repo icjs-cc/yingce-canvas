@@ -21,6 +21,8 @@ export function videoWaitLabel(wait: string) {
 
 /** 剧情段当前处于哪一步，以及用户下一步该做什么。detail 是需要悬停查看的完整原因。 */
 export function segmentState(segment: DramaSegment): { tone: SegmentTone; label: string; detail?: string } {
+    if (segment.promptStatus === "review") return { tone: "blocked", label: "AI 新稿待采用", detail: segment.promptError };
+    if (segment.promptStatus === "conflict") return { tone: "blocked", label: "提示词待核对", detail: segment.promptError };
     const writing = segment.promptStatus === "queued" || segment.promptStatus === "running";
     if (segment.promptStatus === "failed") return { tone: "failed", label: "提示词撰写失败" };
     // 视频已入库但尾帧等后处理失败：视频本身可看，重试只重新处理已有视频。
@@ -45,7 +47,7 @@ export function segmentState(segment: DramaSegment): { tone: SegmentTone; label:
 }
 
 export function promptReady(segment: DramaSegment) {
-    return segment.custom || segment.promptStatus === "ready";
+    return segment.promptStatus === "ready" || (segment.promptStatus === "stale" && segment.custom);
 }
 
 export function SegmentStatus({ segment }: { segment: DramaSegment }) {
@@ -66,12 +68,13 @@ export function SegmentStatus({ segment }: { segment: DramaSegment }) {
     );
 }
 
-export function SegmentVideo({ segment, aspectRatio, className = "" }: { segment: DramaSegment; aspectRatio: string; className?: string }) {
+export function SegmentVideo({ segment, aspectRatio, className = "", previewResourceId }: { segment: DramaSegment; aspectRatio: string; className?: string; previewResourceId?: string }) {
     const viewable = segment.videoStatus === "ready" || segment.videoStatus === "stale" || segment.videoStatus === "failed";
-    const url = useResourceMediaUrl(viewable ? segment.videoResourceId : undefined, "playback");
+    const resourceId = previewResourceId || (viewable ? segment.videoResourceId : undefined);
+    const url = useResourceMediaUrl(resourceId, "playback");
     const state = segmentState(segment);
     return (
-        <div className={`drama-sg-video ${className}`} style={{ aspectRatio: aspectRatioValue(aspectRatio) }}>
+        <div className={`drama-sg-video ${className}${previewResourceId ? " is-preview" : ""}`} style={{ aspectRatio: aspectRatioValue(aspectRatio) }}>
             {url ? (
                 <video key={url} src={url} controls playsInline preload="metadata" />
             ) : (
@@ -90,10 +93,10 @@ export function SegmentVideo({ segment, aspectRatio, className = "" }: { segment
  * 参考图编号与提示词里的“参考图N”一致；未附图的设定说明原因。
  */
 /** 参考图未随请求发送的原因；与后端 prepareDramaSegment 的判断一致。 */
-export function referenceMissingReason(segment: DramaSegment, cast: DramaCast | undefined) {
+export function referenceMissingReason(segment: DramaSegment, cast: DramaCast | undefined, resourceId?: string) {
     if (cast?.imageStatus === "failed") return "参考图生成失败";
     if (mediaBusy(cast?.imageStatus || "")) return "参考图生成中";
-    if (!cast?.imageResourceId || cast.imageStatus !== "ready") return "参考图未生成";
+    if (cast ? !cast.imageResourceId || cast.imageStatus !== "ready" : !resourceId) return "参考图未生成";
     // 生成方式未确定：视频模型不可用或时长超限，本段暂不能生成，原因见本段提示。
     if (!segment.request.operation) return "本段暂不能生成";
     if (segment.request.operation === "text_to_video") return "模型按文生视频生成，不收参考图";
@@ -121,11 +124,11 @@ export function SegmentInputs({ segment, castById, compact = false, frameOnly = 
             </Tooltip>
             {(frameOnly ? [] : request.references).map((ref) => {
                 const cast = castById.get(ref.castId);
-                const reason = ref.sent ? "" : referenceMissingReason(segment, cast);
+                const reason = ref.sent ? "" : referenceMissingReason(segment, cast, ref.resourceId);
                 const body = (
                     <>
                         <span className={`drama-sg-thumb is-wide ${ref.sent ? "" : "is-missing"}`}>
-                            {cast?.imageResourceId ? <MediaThumb resourceId={cast.imageResourceId} alt={ref.name} /> : <span className="drama-sg-thumb-empty">{CAST_KIND_LABEL[ref.kind]}</span>}
+                            {ref.resourceId || cast?.imageResourceId ? <MediaThumb resourceId={ref.resourceId || cast!.imageResourceId!} alt={ref.name} /> : <span className="drama-sg-thumb-empty">{CAST_KIND_LABEL[ref.kind]}</span>}
                             <em>{ref.label.replace("参考图", "图")}</em>
                         </span>
                         {compact ? null : (
@@ -139,8 +142,8 @@ export function SegmentInputs({ segment, castById, compact = false, frameOnly = 
                     </>
                 );
                 return (
-                    <Tooltip key={ref.castId} title={`${ref.label} · ${CAST_KIND_LABEL[ref.kind]} · ${ref.name}${ref.sent ? "" : `（未附图：${reason}，按文字设定生成）`}`} mouseEnterDelay={0.3}>
-                        {onOpenCast ? (
+                    <Tooltip key={ref.castId || ref.resourceId} title={`${ref.label} · ${CAST_KIND_LABEL[ref.kind]} · ${ref.name}${ref.sent ? "" : `（未附图：${reason}，按文字设定生成）`}`} mouseEnterDelay={0.3}>
+                        {onOpenCast && ref.castId ? (
                             <button type="button" className={`drama-sg-input ${ref.sent ? "" : "is-missing"}`} onClick={() => onOpenCast(ref.castId)}>
                                 {body}
                             </button>

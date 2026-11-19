@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"yingce/backend/internal/model"
+	"yingce/backend/internal/protocol"
 )
 
 func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) error {
@@ -24,7 +25,7 @@ func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) 
 			}
 			profile = DefaultModelCapabilityConfigForModel(input.Config.InterfaceType, input.Config.Model)
 		}
-		normalized, err := NormalizeModelCapabilityConfigForModel("video", input.Config.InterfaceType, input.Config.Model, profile)
+		normalized, err := NormalizeModelCapabilityConfigForModel("video", input.Config.InterfaceType, input.Config.Model, profile, s.protocolRegistry())
 		if err != nil || normalized == nil || normalized.Video == nil {
 			return errors.New("当前视频模型能力参数无效")
 		}
@@ -42,7 +43,7 @@ func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) 
 	if err != nil || profile == nil || profile.Video == nil {
 		return errors.New("当前视频模型尚未配置能力参数")
 	}
-	normalized, err := NormalizeModelCapabilityConfigForModel("video", string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey), profile)
+	normalized, err := NormalizeModelCapabilityConfigForModel("video", string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey), profile, s.protocolRegistry())
 	if err != nil || normalized == nil || normalized.Video == nil {
 		return errors.New("当前视频模型能力参数无效")
 	}
@@ -81,6 +82,11 @@ func runVideoTaskWithPolicy(ctx context.Context, input canvasGenerationInput, po
 		return nil, errors.New("OpenAI 风格视频接口不支持参考视频或参考音频，请切换到 Seedance / Agent Plan 渠道")
 	}
 	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		if _, err := prepareDramaReferencePlan(input, protocolRequestFromInput(input), protocol.Metadata{ID: input.Config.InterfaceType}); err != nil {
+			return nil, err
+		}
+	}
 	var created map[string]interface{}
 	if id == "" && isGrokVideoConfig(input.Config) {
 		requestBody, err := grokVideoBody(input)
@@ -323,7 +329,11 @@ func runSeedanceAgentPlanVideoTask(ctx context.Context, input canvasGenerationIn
 			value := parseBool(input.Config.VideoWatermark, false)
 			body.Watermark = &value
 		}
-		if err := postJSON(ctx, input.Config, "/contents/generations/tasks", body, &created); err != nil {
+		payload, err := compileLegacyDramaReferences(input, body, "content")
+		if err != nil {
+			return nil, err
+		}
+		if err := postJSON(ctx, input.Config, "/contents/generations/tasks", payload, &created); err != nil {
 			return nil, err
 		}
 		if data, ok := created["data"].(map[string]interface{}); ok {
@@ -479,6 +489,17 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 	}
 	if len(audioURLs) > 0 {
 		body.ReferenceAudios = audioURLs
+	}
+	layout := "image-urls"
+	if len(body.ImageURLs) == 0 {
+		layout = "legacy-reference-image-urls"
+	}
+	payload, err := compileLegacyDramaReferences(input, body, layout)
+	if err != nil {
+		return seedanceVideosRequest{}, err
+	}
+	if compiled, ok := payload.(map[string]any); ok {
+		body.Prompt = stringField(compiled, "prompt")
 	}
 	return body, nil
 }

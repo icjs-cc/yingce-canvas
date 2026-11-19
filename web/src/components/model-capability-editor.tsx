@@ -5,9 +5,23 @@ import { Switch } from "@/components/ui/base/switch";
 import { Checkbox } from "@/components/ui/base/checkbox";
 import { SegmentedControl } from "@/components/ui/base/segmented-control";
 import type { ReactNode } from "react";
+import {
+    THINKING_LEVELS,
+    THINKING_LEVEL_LABELS,
+    THINKING_PRESETS,
+    thinkingLevelsFor,
+    thinkingPresetConfig,
+    withThinkingLevels,
+    type TextThinkingConfig,
+    type ThinkingLevel,
+    type ThinkingMode,
+    type ThinkingSwitchKind,
+    type ThinkingIntensityKind,
+} from "@/lib/text-thinking";
 
 import {
     DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS,
+    MEDIAKIT_DEPTH_MAX_SOURCE_SECONDS,
     defaultImageCapabilityConfig,
     defaultModelCapabilityConfig,
     normalizeModelCapabilityConfig,
@@ -36,6 +50,7 @@ const operationOptions = [
     { label: "风格迁移", value: "style_transfer" },
     { label: "音频生视频", value: "audio_to_video" },
     { label: "画质增强", value: "enhance" },
+    { label: "相对深度", value: "depth" },
 ];
 
 function ImageSizeHelp() {
@@ -51,15 +66,16 @@ type Props = {
     workflows?: ModelProtocolWorkflow[];
     imageParameters?: ImageParameter[];
     disabled?: boolean;
+    templateEditing?: boolean;
     section?: "all" | "protocol" | "references";
 };
 
-export function ModelCapabilityEditor({ value, onChange, protocol, capability = "video", model = "", workflows = [], imageParameters, disabled = false, section = "all" }: Props) {
+export function ModelCapabilityEditor({ value, onChange, protocol, capability = "video", model = "", workflows = [], imageParameters, disabled = false, templateEditing = false, section = "all" }: Props) {
     if (capability === "text") {
         return <TextCapabilityEditor value={value} onChange={onChange} protocol={protocol} disabled={disabled} section={section} />;
     }
     if (capability === "image") {
-        return <ImageCapabilityEditor value={value} onChange={onChange} protocol={protocol} model={model} imageParameters={imageParameters} disabled={disabled} section={section} />;
+        return <ImageCapabilityEditor value={value} onChange={onChange} protocol={protocol} model={model} imageParameters={imageParameters} disabled={disabled} templateEditing={templateEditing} section={section} />;
     }
     const workflow = findProtocolWorkflow(workflows, protocol, model);
     const storedProfile = normalizeModelCapabilityConfig(value || defaultModelCapabilityConfig(protocol, model)).video!;
@@ -73,34 +89,40 @@ export function ModelCapabilityEditor({ value, onChange, protocol, capability = 
     const autoDLSpecFields = <AutoDLScreenSpecFields profile={profile} workflow={workflow} disabled={disabled} onChange={(video) => onChange?.({ version: 1, video })} />;
     // 视频处理模型（画质增强等）：帧率策略与源视频时长上限；生成模型不显示。
     const processing = profile.processing;
+    const depthProcessing = profile.defaultOperation === "depth";
+    const maxProcessingSeconds = depthProcessing ? MEDIAKIT_DEPTH_MAX_SOURCE_SECONDS : DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS;
     const processingFields = processing ? (
         <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="帧率策略">
-                <Select
-                    className="w-full"
-                    disabled={disabled}
-                    value={processing.fpsPolicy}
-                    options={[
-                        { label: "保持原帧率（按 ≤30fps 档预扣）", value: "keep_source" },
-                        { label: "用户选择帧率", value: "user_select" },
-                    ]}
-                    onChange={(fpsPolicy) =>
-                        update({ processing: fpsPolicy === "user_select" ? { ...processing, fpsPolicy, fpsOptions: processing.fpsOptions?.length ? processing.fpsOptions : [30, 60] } : { fpsPolicy, maxSourceSeconds: processing.maxSourceSeconds } })
-                    }
-                />
-            </Field>
+            {depthProcessing ? (
+                <p className="text-sm text-muted-foreground">固定 standard 档，不提供输出分辨率、帧率或码率选项。</p>
+            ) : (
+                <Field label="帧率策略">
+                    <Select
+                        className="w-full"
+                        disabled={disabled}
+                        value={processing.fpsPolicy}
+                        options={[
+                            { label: "保持原帧率（按 ≤30fps 档预扣）", value: "keep_source" },
+                            { label: "用户选择帧率", value: "user_select" },
+                        ]}
+                        onChange={(fpsPolicy) =>
+                            update({ processing: fpsPolicy === "user_select" ? { ...processing, fpsPolicy, fpsOptions: processing.fpsOptions?.length ? processing.fpsOptions : [30, 60] } : { fpsPolicy, maxSourceSeconds: processing.maxSourceSeconds } })
+                        }
+                    />
+                </Field>
+            )}
             {processing.fpsPolicy === "user_select" ? (
                 <Field label="可选帧率（15–120，逗号分隔）">
                     <Input disabled={disabled} value={(processing.fpsOptions || []).join(",")} placeholder="例如：30,60" onChange={(event) => update({ processing: { ...processing, fpsOptions: parseIntegerList(event.target.value) } })} />
                 </Field>
             ) : null}
             <NumberField
-                label={`源视频最长秒数（≤${DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS}）`}
-                value={processing.maxSourceSeconds || DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS}
+                label={`源视频最长秒数（≤${maxProcessingSeconds}）`}
+                value={processing.maxSourceSeconds || maxProcessingSeconds}
                 min={1}
-                max={DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS}
+                max={maxProcessingSeconds}
                 disabled={disabled}
-                onChange={(value) => update({ processing: { ...processing, maxSourceSeconds: value || DEFAULT_VIDEO_PROCESSING_MAX_SOURCE_SECONDS } })}
+                onChange={(value) => update({ processing: { ...processing, maxSourceSeconds: value || maxProcessingSeconds } })}
             />
         </div>
     ) : null;
@@ -462,6 +484,7 @@ function TextCapabilityEditor({ value, onChange, protocol, disabled, section }: 
                         onChange={(streaming) => update({ streaming })}
                     />
                 </CapabilityGroup>
+                <TextThinkingEditor value={profile.thinking} disabled={Boolean(disabled)} onChange={(thinking) => update({ thinking })} />
             </div>
         );
     }
@@ -522,16 +545,27 @@ function TextCapabilityEditor({ value, onChange, protocol, disabled, section }: 
     );
 }
 
-function ImageCapabilityEditor({ value, onChange, protocol, model, imageParameters, disabled, section }: Required<Pick<Props, "model" | "disabled">> & Pick<Props, "value" | "onChange" | "protocol" | "section" | "imageParameters">) {
+function ImageCapabilityEditor({
+    value,
+    onChange,
+    protocol,
+    model,
+    imageParameters,
+    disabled,
+    templateEditing,
+    section,
+}: Required<Pick<Props, "model" | "disabled">> & Pick<Props, "value" | "onChange" | "protocol" | "section" | "imageParameters" | "templateEditing">) {
     const stored = normalizeModelCapabilityConfig(value || { version: 1, image: defaultImageCapabilityConfig(protocol, model) }).image!;
-    const profile = imageParameters ? resolveImageParameters(stored, imageParameters, model) : stored;
+    const profile = imageParameters ? resolveImageParameters(stored, imageParameters, model, protocol) : stored;
     const update = (patch: Partial<ImageCapabilityConfig>) => onChange?.({ version: 1, image: { ...profile, ...patch } });
     const updateReferences = (patch: Partial<ImageCapabilityConfig["references"]>) => update({ references: { ...profile.references, ...patch } });
     const updateSize = (patch: Partial<ImageCapabilityConfig["size"]>) => update({ size: { ...profile.size, ...patch } });
     const updateQuality = (patch: Partial<ImageCapabilityConfig["quality"]>) => update({ quality: { ...profile.quality, ...patch } });
 
     if (section !== "references" && profile.parameters) {
-        const definitions = imageParameters || profile.parameters;
+        // 模板声明的是可编辑范围，不能反过来成为编辑器的固定上限。
+        // 只使用参数身份和类型；实际协议的约束留到目标模型应用/保存时检查。
+        const definitions = templateEditing ? profile.parameters.map(({ name, label, type, binding, encoding, pricing, description }) => ({ name, label, type, binding, encoding, pricing, description })) : imageParameters || profile.parameters;
         const size = profile.parameters.find((p) => p.name === "size");
         return (
             <div className="space-y-4">
@@ -546,11 +580,12 @@ function ImageCapabilityEditor({ value, onChange, protocol, model, imageParamete
                                 profile,
                                 profile.parameters!.map((p) => parameters.find((next) => next.name === p.name) || p),
                                 definitions,
+                                protocol,
                             ),
                         })
                     }
                 />
-                {size ? <ImageParameterSizeEditor profile={profile} definition={definitions.find((p) => p.name === "size") || size} disabled={disabled} onChange={(image) => onChange?.({ version: 1, image })} /> : null}
+                {size ? <ImageParameterSizeEditor profile={profile} protocol={protocol} definition={definitions.find((p) => p.name === "size") || size} disabled={disabled} onChange={(image) => onChange?.({ version: 1, image })} /> : null}
                 <ImageParameterSchemaEditor
                     definitions={definitions}
                     parameters={profile.parameters.filter((p) => p.name !== "size" && p.name !== "imageResolution")}
@@ -744,6 +779,171 @@ function ImageCapabilityEditor({ value, onChange, protocol, model, imageParamete
                 <NumberField label="提示词最大字符数" value={profile.references.promptMaxChars} min={1} disabled={disabled} onChange={(promptMaxChars) => updateReferences({ promptMaxChars: promptMaxChars || 1 })} />
             </CapabilityGroup>
         </div>
+    );
+}
+
+const thinkingModeOptions: Array<{ label: string; value: ThinkingMode }> = [
+    { label: "不支持", value: "none" },
+    { label: "开关", value: "toggle" },
+    { label: "分档", value: "levels" },
+    { label: "必须思考", value: "always" },
+];
+
+const thinkingSwitchOptions: Array<{ label: string; value: ThinkingSwitchKind }> = [
+    { label: "不能关闭（不写开关）", value: "none" },
+    { label: "关闭时省略思考字段", value: "omit" },
+    { label: "effort = none", value: "effort-none" },
+    { label: "enable_thinking = true / false", value: "enable-flag" },
+    { label: "thinking.type = 开启值 / disabled", value: "thinking-type" },
+    { label: "预算 = 0", value: "budget-zero" },
+];
+const thinkingIntensityOptions: Array<{ label: string; value: ThinkingIntensityKind }> = [
+    { label: "只发开关（不发强度）", value: "none" },
+    { label: "effort 枚举", value: "effort" },
+    { label: "Token 预算", value: "budget" },
+    { label: "Gemini thinkingLevel", value: "gemini-level" },
+    { label: "模型名后缀", value: "model-suffix" },
+];
+const thinkingIntensityFields = {
+    effort: ["reasoning_effort", "reasoning.effort", "output_config.effort"],
+    budget: ["thinking_budget", "reasoning.max_tokens", "thinking.budget_tokens", "generationConfig.thinkingConfig.thinkingBudget"],
+};
+
+// 预设只是起点；管理员可按真实型号修改档位、开关、上游取值和预算。
+// 保存时后端按接口格式校验，预设展开后的完整配置随模型保存。
+function TextThinkingEditor({ value, disabled, onChange }: { value?: TextThinkingConfig; disabled: boolean; onChange: (value: TextThinkingConfig | undefined) => void }) {
+    const preset = THINKING_PRESETS.find((item) => item.id === value?.preset);
+    const levels = value ? thinkingLevelsFor(value) : [];
+    const enabledLevels = value?.mode === "always" ? THINKING_LEVELS.filter((level) => level !== "off") : THINKING_LEVELS;
+    const setLevels = (next: ThinkingLevel[]) => {
+        if (!value) return;
+        onChange(withThinkingLevels(value, next));
+    };
+    return (
+        <CapabilityGroup title="思考等级" description="未配置时沿用旧的开关行为（开启 = 标准档，Gemini 与插件自定义接口不发送思考参数）。">
+            <Field label="预设">
+                <Select
+                    className="w-full"
+                    allowClear
+                    placeholder="未配置（沿用旧行为）"
+                    disabled={disabled}
+                    value={value?.preset || (value ? "custom" : undefined)}
+                    options={[...THINKING_PRESETS.map((item) => ({ label: item.label, value: item.id })), { label: "自定义", value: "custom" }]}
+                    onChange={(id?: string) =>
+                        onChange(!id ? undefined : id === "custom" ? { ...(value || { mode: "levels", levels: ["off", "low", "medium", "high"], switch: { kind: "omit" }, intensity: { kind: "effort" } }), preset: undefined } : thinkingPresetConfig(id))
+                    }
+                />
+            </Field>
+            {preset ? <p className="text-[var(--fs-tiny)] leading-5 text-foreground/45">{preset.hint}</p> : null}
+            {value ? (
+                <>
+                    <Field label="思考模式">
+                        <SegmentedControl
+                            block
+                            disabled={disabled}
+                            value={value.mode}
+                            options={thinkingModeOptions}
+                            onChange={(mode) => {
+                                const next = withThinkingLevels(value, mode === "always" ? levels.filter((level) => level !== "off") : levels);
+                                onChange({ ...next, mode: mode as ThinkingMode, switch: mode === "always" && next.switch.kind === "omit" ? { kind: "none" } : next.switch });
+                            }}
+                        />
+                    </Field>
+                    {value.mode !== "none" ? (
+                        <>
+                            <Field label="支持的档位">
+                                <Select
+                                    mode="multiple"
+                                    className="w-full"
+                                    disabled={disabled}
+                                    value={levels}
+                                    options={enabledLevels.map((level) => ({ label: THINKING_LEVEL_LABELS[level], value: level }))}
+                                    onChange={(next: ThinkingLevel[]) => setLevels(next)}
+                                />
+                            </Field>
+                            <Field label="默认档位">
+                                <Select
+                                    className="w-full"
+                                    disabled={disabled}
+                                    value={value.default || ""}
+                                    options={[{ label: "不发送（交给上游默认）", value: "" }, ...levels.map((level) => ({ label: THINKING_LEVEL_LABELS[level], value: level }))]}
+                                    onChange={(next: ThinkingLevel | "") => onChange({ ...value, default: next })}
+                                />
+                            </Field>
+                            <details className="space-y-3">
+                                <summary className="cursor-pointer text-xs text-foreground/60">高级协议映射</summary>
+                                <p className="text-[var(--fs-tiny)] leading-5 text-foreground/45">按上游实际能力配置，保存时校验协议字段。仅配置该型号支持的档位；第三方渠道不保证支持整个系列的参数。</p>
+                                <Field label="开关写法">
+                                    <Select className="w-full" disabled={disabled} value={value.switch.kind} options={thinkingSwitchOptions} onChange={(kind: ThinkingSwitchKind) => onChange({ ...value, switch: { kind } })} />
+                                </Field>
+                                {value.switch.kind === "thinking-type" ? (
+                                    <Field label="开启时 thinking.type">
+                                        <Select
+                                            className="w-full"
+                                            disabled={disabled}
+                                            value={value.switch.onValue || "enabled"}
+                                            options={["enabled", "auto", "adaptive"].map((item) => ({ label: item, value: item }))}
+                                            onChange={(onValue: string) => onChange({ ...value, switch: { ...value.switch, onValue } })}
+                                        />
+                                    </Field>
+                                ) : null}
+                                <Field label="强度写法">
+                                    <Select className="w-full" disabled={disabled} value={value.intensity.kind} options={thinkingIntensityOptions} onChange={(kind: ThinkingIntensityKind) => onChange({ ...value, intensity: { kind } })} />
+                                </Field>
+                                {value.intensity.kind === "effort" || value.intensity.kind === "budget" ? (
+                                    <Field label="写入字段">
+                                        <Select
+                                            className="w-full"
+                                            disabled={disabled}
+                                            value={value.intensity.field || ""}
+                                            options={[{ label: "按接口格式自动选择", value: "" }, ...thinkingIntensityFields[value.intensity.kind].map((field) => ({ label: field, value: field }))]}
+                                            onChange={(field: string) => onChange({ ...value, intensity: { ...value.intensity, field } })}
+                                        />
+                                    </Field>
+                                ) : null}
+                                {value.intensity.kind === "none"
+                                    ? null
+                                    : levels
+                                          .filter((level) => level !== "off")
+                                          .map((level) => (
+                                              <Field key={level} label={`${THINKING_LEVEL_LABELS[level]} · ${value.intensity.kind === "budget" ? "Token 预算" : value.intensity.kind === "model-suffix" ? "模型名后缀" : "上游取值"}`}>
+                                                  {value.intensity.kind === "budget" ? (
+                                                      <InputNumber
+                                                          className="w-full"
+                                                          disabled={disabled}
+                                                          min={1024}
+                                                          precision={0}
+                                                          placeholder="留空按本次输出上限比例计算"
+                                                          value={value.intensity.budgets?.[level]}
+                                                          onChange={(budget: number | null) => {
+                                                              const budgets = { ...value.intensity.budgets };
+                                                              if (budget === null) delete budgets[level];
+                                                              else budgets[level] = budget;
+                                                              onChange({ ...value, intensity: { ...value.intensity, budgets } });
+                                                          }}
+                                                      />
+                                                  ) : (
+                                                      <Input
+                                                          disabled={disabled}
+                                                          placeholder={value.intensity.kind === "model-suffix" ? "如 -thinking（必填）" : level}
+                                                          value={value.intensity.values?.[level] || ""}
+                                                          onChange={(event) => {
+                                                              const values = { ...value.intensity.values };
+                                                              const wireValue = event.target.value.trim();
+                                                              if (wireValue) values[level] = wireValue;
+                                                              else delete values[level];
+                                                              onChange({ ...value, intensity: { ...value.intensity, values } });
+                                                          }}
+                                                      />
+                                                  )}
+                                              </Field>
+                                          ))}
+                            </details>
+                        </>
+                    ) : null}
+                </>
+            ) : null}
+        </CapabilityGroup>
     );
 }
 

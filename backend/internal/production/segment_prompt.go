@@ -159,15 +159,11 @@ func SegmentVideoPrompt(in SegmentPromptInput) string {
 	for _, shot := range in.Shots {
 		total += shot.DurationMs
 	}
-	refLabel := map[string]string{}
-	for _, ref := range in.References {
-		refLabel[ref.Name] = ref.Label
-	}
-	withRef := func(name string) string {
-		if label := refLabel[name]; label != "" {
-			return name + "（" + label + "）"
+	withRef := func(ref SegmentReference) string {
+		if ref.Label != "" {
+			return ref.Name + "（" + ref.Label + "）"
 		}
-		return name
+		return ref.Name
 	}
 
 	if in.Index > 0 && in.Independent {
@@ -198,12 +194,17 @@ func SegmentVideoPrompt(in SegmentPromptInput) string {
 		b.WriteString(rules + "。")
 	}
 	b.WriteString("画面不出现字幕、水印和界面元素。\n")
+	for _, ref := range in.References {
+		if ref.Kind == "image" {
+			fmt.Fprintf(&b, "补充参考：%s（%s），结合本段剧情使用该图的视觉信息，不凭图片名称增加角色或台词。\n", ref.Name, ref.Label)
+		}
+	}
 
 	b.WriteString("\n【场景布局、人物站位与机位轴线】\n")
 	scenes := []string{}
 	for _, ref := range in.References {
 		if ref.Kind == "scene" {
-			line := withRef(ref.Name)
+			line := withRef(ref)
 			if detail := strings.TrimSpace(ref.Detail); detail != "" {
 				line += "：" + detail
 			}
@@ -236,7 +237,7 @@ func SegmentVideoPrompt(in SegmentPromptInput) string {
 	if len(characters) > 0 {
 		b.WriteString("\n【角色与参考图】\n")
 		for _, ref := range characters {
-			line := withRef(ref.Name)
+			line := withRef(ref)
 			if detail := strings.TrimSpace(ref.Detail); detail != "" {
 				line += "：" + detail
 			}
@@ -247,7 +248,7 @@ func SegmentVideoPrompt(in SegmentPromptInput) string {
 	if len(props) > 0 {
 		b.WriteString("\n【道具与参考图】\n")
 		for _, ref := range props {
-			line := withRef(ref.Name)
+			line := withRef(ref)
 			if detail := strings.TrimSpace(ref.Detail); detail != "" {
 				line += "：" + detail
 			}
